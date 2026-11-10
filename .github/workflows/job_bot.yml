@@ -28,4 +28,5 @@ jobs:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
-        run: python bot/bot.py
+        run: |
+          python -c "import glob, os; files = glob.glob('**/bot.py', recursive=True); print('Bulunan dosyalar:', files); os.system(f'python {files[0]}')"
