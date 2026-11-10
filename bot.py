@@ -6,7 +6,8 @@ import requests
 
 # GitHub Secrets üzerinden güvenli okuma
 SENDER_EMAIL = os.environ.get("taniksiztarih@gmail.com")
-SENDER_PASSWORD = os.environ.get("n j p s m c c m a l i m i b o g")
+SENDER_PASSWORD = os.environ.get("n j p s m c c m a l i m i b o g" \
+"")
 RECEIVER_EMAIL = os.environ.get("taniksiztarih@gmail.com")
 
 TARGET_KEYWORDS = [
@@ -21,30 +22,21 @@ TARGET_KEYWORDS = [
 TARGET_COUNTRIES = ["Germany", "United States", "Deutschland"]
 
 
-def send_email_notification(job_title, job_location, job_url):
+def send_email_notification(subject, body_text):
   try:
     msg = MIMEMultipart()
     msg["From"] = SENDER_EMAIL
     msg["To"] = RECEIVER_EMAIL
-    msg["Subject"] = f"🎯 Yeni İş İlanı (DE / US): {job_title}"
+    msg["Subject"] = subject
 
-    body = f"""
-    Almanya veya ABD için yeni bir iş ilanı bulundu!
-    
-    Pozisyon: {job_title}
-    Lokasyon: {job_location}
-    İlan Linki: {job_url}
-    
-    GitHub Actions Bulut Botu
-    """
-    msg.attach(MIMEText(body, "plain"))
+    msg.attach(MIMEText(body_text, "plain"))
 
     server = smtplib.SMTP("smtp.gmail.com", 587)
     server.starttls()
     server.login(SENDER_EMAIL, SENDER_PASSWORD)
     server.sendmail(SENDER_EMAIL, RECEIVER_EMAIL, msg.as_string())
     server.quit()
-    print(f"[E-posta Gönderildi] {job_title}")
+    print("[E-posta Gönderildi]")
   except Exception as e:
     print(f"E-posta gönderme hatası: {e}")
 
@@ -53,14 +45,20 @@ def check_jobs():
   print("\n[Bilgi] Almanya ve ABD için iş ilanları taranıyor...")
   url = "https://www.arbeitnow.com/api/job-board-api"
 
+  found_jobs_text = ""
+  new_jobs_found = 0
+
   try:
     response = requests.get(url, timeout=10)
     if response.status_code != 200:
       print("API yanıt vermedi.")
+      send_email_notification(
+          "⚠️ İş Botu Uyarı: API Yanıt Vermedi",
+          "GitHub Actions botu çalışt ancak Arbeitnow API yanıt vermedi.",
+      )
       return
 
     data = response.json().get("data", [])
-    new_jobs_found = 0
 
     for job in data:
       title = job.get("title", "").lower()
@@ -74,13 +72,30 @@ def check_jobs():
 
       if keyword_match and location_match:
         new_jobs_found += 1
+        found_jobs_text += (
+            f"Pozisyon: {job.get('title')}\nLokasyon: {location}\nLink:"
+            f" {job_url}\n\n--------------------\n"
+        )
         print(f"-> Eşleşen İlan: {job.get('title')} ({location})")
-        send_email_notification(job.get("title"), location, job_url)
 
+    # İlan bulunsun veya bulunmasın HER ÇALIŞMADA mail atar
+    if new_jobs_found > 0:
+      subject = f"🎯 Yeni İş İlanı Bulundu ({new_jobs_found} adet)"
+      body = f"Almanya veya ABD için kriterlerine uyan ilanlar:\n\n{found_jobs_text}"
+    else:
+      subject = "🤖 İş Botu Çalıştı: Yeni İlan Yok"
+      body = (
+          "Bot periyodik olarak tarama yaptı ancak kriterlerine uyan yeni bir"
+          " ilan bulamadı. Sistem aktif ve sorunsuz çalışıyor."
+      )
+
+    send_email_notification(subject, body)
     print(f"[Tarama Tamamlandı] {new_jobs_found} yeni uygun ilan bulundu.")
 
   except Exception as e:
-    print(f"Tarama sırasında hata oluştu: {e}")
+    error_msg = f"Tarama sırasında hata oluştu: {e}"
+    print(error_msg)
+    send_email_notification("❌ İş Botu Hata Raporu", error_msg)
 
 
 if __name__ == "__main__":
