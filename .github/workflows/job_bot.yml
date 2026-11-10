@@ -18,13 +18,11 @@ jobs:
           python-version: '3.10'
 
       - name: Kutuphaneleri Yukle
-        run: |
-          pip install requests
+        run: pip install requests
 
       - name: Botu Calistir
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
-        run: |
-          python bot/bot.py
+        run: python bot/bot.py
