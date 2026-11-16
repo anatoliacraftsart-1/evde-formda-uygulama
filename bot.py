@@ -3,7 +3,6 @@ import requests
 import re
 from urllib.parse import quote
 
-# Token güvenli şekilde GitHub Secrets üzerinden okunur
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = "8875880423"
 
@@ -12,6 +11,16 @@ TARGET_KEYWORDS = [
     "courier", "delivery", "driver", "rider", "kurier", "fahrer", "zusteller", "auslieferungsfahrer", "paketbote",
     "warehouse", "logistics", "picker", "packer", "lager", "lagerhelfer", "kommissionierer", "logistik",
     "trainer", "fitness", "coach", "gym", "fitnesstrainer", "personal trainer"
+]
+
+# Yurt dışından başvuru / vize sponsorluğu sinyali veren kelimeler
+VISA_KEYWORDS = [
+    "visa", "sponsorship", "relocation", "international", "visum", "arbeitsvisum", "ausbildung", "eu blue card", "abroad"
+]
+
+# Sadece yerel vatandaş/oturum izni şartı koşan ilanları eleyen kelimeler
+LOCAL_ONLY_KEYWORDS = [
+    "us citizen", "green card", "security clearance", "no sponsorship", "must be authorized to work", "kein visum"
 ]
 
 EXCLUDE_KEYWORDS = [
@@ -23,17 +32,19 @@ TARGET_LOCATIONS = [
     "united states", "usa", "new york", "california", "texas", "florida", "chicago", "los angeles", "new jersey"
 ]
 
+# LinkedIn'de hem normal hem de vize sponsorluklu aramalar
 LINKEDIN_QUERIES = [
+    ("courier delivery driver visa sponsorship", "Germany"),
+    ("warehouse logistics visa sponsorship", "Germany"),
     ("courier delivery driver", "Germany"),
     ("warehouse lager", "Germany"),
     ("fitness trainer", "Germany"),
+    ("warehouse logistics visa sponsorship", "United States"),
     ("courier delivery driver", "United States"),
-    ("warehouse logistics", "United States"),
     ("personal trainer fitness", "United States")
 ]
 
 def translate_to_turkish(text):
-    """İlan başlığını ve konumunu otomatik olarak Türkçeye çevirir."""
     if not text:
         return text
     try:
@@ -41,8 +52,7 @@ def translate_to_turkish(text):
         res = requests.get(url, timeout=5)
         if res.status_code == 200:
             data = res.json()
-            translated = "".join([part[0] for part in data[0] if part[0]])
-            return translated
+            return "".join([part[0] for part in data[0] if part[0]])
     except Exception as e:
         print(f"Çeviri hatası: {e}")
     return text
@@ -77,9 +87,10 @@ def fetch_arbeitnow():
                     continue
                 jobs.append({
                     "title": item.get("title", ""),
+                    "description": item.get("description", ""),
                     "location": item.get("location", ""),
                     "url": item.get("url", ""),
-                    "visa": item.get("visa_sponsorship", False),
+                    "visa_api": item.get("visa_sponsorship", False),
                     "source": "Arbeitnow"
                 })
     except Exception as e:
@@ -105,9 +116,10 @@ def fetch_linkedin():
                     clean_url = u.split("?")[0]
                     jobs.append({
                         "title": t.strip(),
+                        "description": keyword,
                         "location": l.strip(),
                         "url": clean_url,
-                        "visa": False,
+                        "visa_api": "visa" in keyword.lower(),
                         "source": "LinkedIn"
                     })
         except Exception as e:
@@ -115,11 +127,12 @@ def fetch_linkedin():
     return jobs
 
 def check_jobs():
-    print("\n[Bilgi] Arbeitnow ve LinkedIn üzerinden Almanya & ABD saha ilanları taranıyor...")
+    print("\n[Bilgi] Yurt dışı başvurusu ve vize filtreli saha ilanları taranıyor...")
     
     all_jobs = fetch_arbeitnow() + fetch_linkedin()
-    found_jobs_text = ""
-    new_jobs_found = 0
+    visa_jobs_text = ""
+    standard_jobs_text = ""
+    total_found = 0
     seen_urls = set()
 
     for job in all_jobs:
@@ -128,33 +141,49 @@ def check_jobs():
         seen_urls.add(job["url"])
 
         title_lower = job["title"].lower()
+        desc_lower = job.get("description", "").lower()
         location_lower = job["location"].lower()
+        combined_text = f"{title_lower} {desc_lower}"
+
+        # Sadece yerel vatandaş şartı varsa doğrudan ele
+        if any(local_kw in combined_text for local_kw in LOCAL_ONLY_KEYWORDS):
+            continue
 
         location_match = any(loc in location_lower for loc in TARGET_LOCATIONS)
         keyword_match = any(kw in title_lower for kw in TARGET_KEYWORDS)
         is_excluded = any(ex in title_lower for ex in EXCLUDE_KEYWORDS)
 
         if location_match and keyword_match and not is_excluded:
-            new_jobs_found += 1
-            
-            # Başlık ve konumu Türkçeye çevir
+            total_found += 1
             tr_title = translate_to_turkish(job["title"])
             tr_location = translate_to_turkish(job["location"])
-            
-            visa_tag = "🛂 *Vize Sponsorluğu!* | " if job.get("visa") else ""
-            found_jobs_text += (
+
+            # Vize sponsorluğu / Yurt dışı alım kontrolü
+            has_visa = job.get("visa_api") or any(v_kw in combined_text for v_kw in VISA_KEYWORDS)
+
+            entry = (
                 f"• *{tr_title}*\n"
                 f"  _(Orijinal: {job['title']})_\n"
                 f"  📍 {tr_location} - _{job['source']}_\n"
-                f"  {visa_tag}[İlana Git]({job['url']})\n\n"
+                f"  [İlana Git]({job['url']})\n\n"
             )
 
-    if new_jobs_found > 0:
-        message = f"🎯 *Yeni Saha İşi Bulundu!* ({new_jobs_found} Adet)\n\n{found_jobs_text}"[:4000]
-        send_telegram_notification(message)
+            if has_visa:
+                visa_jobs_text += entry
+            else:
+                standard_jobs_text += entry
+
+    if total_found > 0:
+        message = f"🎯 *Yeni Saha İşi Bulundu!* ({total_found} Adet)\n\n"
+        if visa_jobs_text:
+            message += f"🛂 *TÜRKİYE'DEN BAŞVURU / VİZE SPONSORLUĞU AÇIK:*\n{visa_jobs_text}"
+        if standard_jobs_text:
+            message += f"⚠️ *DİĞER İLANLAR (Çalışma İzni Şartını Kontrol Et):*\n{standard_jobs_text}"
+        
+        send_telegram_notification(message[:4000])
     else:
         print("Yeni ilan yok.")
-        send_telegram_notification("🤖 *İş Botu Çalıştı (TR Çevirili):* Yeni ilan yok, sistem aktif.")
+        send_telegram_notification("🤖 *İş Botu Çalıştı (Vize Filtreli):* Yeni ilan yok, sistem aktif.")
 
 if __name__ == "__main__":
     check_jobs()
