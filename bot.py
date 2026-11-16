@@ -1,24 +1,22 @@
 import os
 import requests
 import re
+import html
 from urllib.parse import quote
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = "8875880423"
 
-# Saha ve fiziksel iş odaklı İngilizce & Almanca kelimeler
 TARGET_KEYWORDS = [
     "courier", "delivery", "driver", "rider", "kurier", "fahrer", "zusteller", "auslieferungsfahrer", "paketbote",
     "warehouse", "logistics", "picker", "packer", "lager", "lagerhelfer", "kommissionierer", "logistik",
     "trainer", "fitness", "coach", "gym", "fitnesstrainer", "personal trainer"
 ]
 
-# Yurt dışından başvuru / vize sponsorluğu sinyali veren kelimeler
 VISA_KEYWORDS = [
     "visa", "sponsorship", "relocation", "international", "visum", "arbeitsvisum", "ausbildung", "eu blue card", "abroad"
 ]
 
-# Sadece yerel vatandaş/oturum izni şartı koşan ilanları eleyen kelimeler
 LOCAL_ONLY_KEYWORDS = [
     "us citizen", "green card", "security clearance", "no sponsorship", "must be authorized to work", "kein visum"
 ]
@@ -32,7 +30,6 @@ TARGET_LOCATIONS = [
     "united states", "usa", "new york", "california", "texas", "florida", "chicago", "los angeles", "new jersey"
 ]
 
-# LinkedIn'de hem normal hem de vize sponsorluklu aramalar
 LINKEDIN_QUERIES = [
     ("courier delivery driver visa sponsorship", "Germany"),
     ("warehouse logistics visa sponsorship", "Germany"),
@@ -61,19 +58,30 @@ def send_telegram_notification(message):
     if not TELEGRAM_TOKEN:
         print("Hata: TELEGRAM_TOKEN bulunamadı!")
         return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    
+    # Önce güvenli HTML formatında göndermeyi dener
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": CHAT_ID,
-            "text": message,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": True
-        }
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
             print("[Telegram Mesajı Gönderildi]")
         else:
-            print(f"Telegram hatası: {response.text}")
+            print(f"HTML gönderim hatası ({response.text}), düz metin olarak tekrar deneniyor...")
+            # HTML bile takılırsa formatsız düz metin olarak kesin gönderir
+            clean_text = re.sub(r'<[^>]+>', '', message)
+            fallback_payload = {
+                "chat_id": CHAT_ID,
+                "text": clean_text,
+                "disable_web_page_preview": True
+            }
+            res2 = requests.post(url, json=fallback_payload, timeout=10)
+            print(f"Yedek gönderim sonucu: {res2.status_code}")
     except Exception as e:
         print(f"Telegram gönderme hatası: {e}")
 
@@ -107,17 +115,17 @@ def fetch_linkedin():
             url = f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords={quote(keyword)}&location={quote(country)}&f_TPR=r86400&f_WT=1"
             res = requests.get(url, headers=headers, timeout=10)
             if res.status_code == 200:
-                html = res.text
-                titles = re.findall(r'<h3 class="base-search-card__title">\s*(.*?)\s*</h3>', html, re.DOTALL)
-                locations = re.findall(r'<span class="job-search-card__location">\s*(.*?)\s*</span>', html, re.DOTALL)
-                links = re.findall(r'<a class="base-card__full-link[^"]*" href="([^"]+)"', html)
+                raw_html = res.text
+                titles = re.findall(r'<h3 class="base-search-card__title">\s*(.*?)\s*</h3>', raw_html, re.DOTALL)
+                locations = re.findall(r'<span class="job-search-card__location">\s*(.*?)\s*</span>', raw_html, re.DOTALL)
+                links = re.findall(r'<a class="base-card__full-link[^"]*" href="([^"]+)"', raw_html)
                 
                 for t, l, u in zip(titles, locations, links):
                     clean_url = u.split("?")[0]
                     jobs.append({
-                        "title": t.strip(),
+                        "title": html.unescape(t.strip()),
                         "description": keyword,
-                        "location": l.strip(),
+                        "location": html.unescape(l.strip()),
                         "url": clean_url,
                         "visa_api": "visa" in keyword.lower(),
                         "source": "LinkedIn"
@@ -130,9 +138,8 @@ def check_jobs():
     print("\n[Bilgi] Yurt dışı başvurusu ve vize filtreli saha ilanları taranıyor...")
     
     all_jobs = fetch_arbeitnow() + fetch_linkedin()
-    visa_jobs_text = ""
-    standard_jobs_text = ""
-    total_found = 0
+    visa_jobs_list = []
+    standard_jobs_list = []
     seen_urls = set()
 
     for job in all_jobs:
@@ -145,7 +152,6 @@ def check_jobs():
         location_lower = job["location"].lower()
         combined_text = f"{title_lower} {desc_lower}"
 
-        # Sadece yerel vatandaş şartı varsa doğrudan ele
         if any(local_kw in combined_text for local_kw in LOCAL_ONLY_KEYWORDS):
             continue
 
@@ -154,36 +160,38 @@ def check_jobs():
         is_excluded = any(ex in title_lower for ex in EXCLUDE_KEYWORDS)
 
         if location_match and keyword_match and not is_excluded:
-            total_found += 1
-            tr_title = translate_to_turkish(job["title"])
-            tr_location = translate_to_turkish(job["location"])
-
-            # Vize sponsorluğu / Yurt dışı alım kontrolü
             has_visa = job.get("visa_api") or any(v_kw in combined_text for v_kw in VISA_KEYWORDS)
-
-            entry = (
-                f"• *{tr_title}*\n"
-                f"  _(Orijinal: {job['title']})_\n"
-                f"  📍 {tr_location} - _{job['source']}_\n"
-                f"  [İlana Git]({job['url']})\n\n"
-            )
-
             if has_visa:
-                visa_jobs_text += entry
+                visa_jobs_list.append(job)
             else:
-                standard_jobs_text += entry
+                standard_jobs_list.append(job)
+
+    total_found = len(visa_jobs_list) + len(standard_jobs_list)
 
     if total_found > 0:
-        message = f"🎯 *Yeni Saha İşi Bulundu!* ({total_found} Adet)\n\n"
-        if visa_jobs_text:
-            message += f"🛂 *TÜRKİYE'DEN BAŞVURU / VİZE SPONSORLUĞU AÇIK:*\n{visa_jobs_text}"
-        if standard_jobs_text:
-            message += f"⚠️ *DİĞER İLANLAR (Çalışma İzni Şartını Kontrol Et):*\n{standard_jobs_text}"
+        # Çeviri limitine takılmamak için en fazla ilk 12 ilanı çevirip gösterir
+        message = f"🎯 <b>Yeni Saha İşi Bulundu!</b> (Toplam {total_found} Adet)\n\n"
         
+        if visa_jobs_list:
+            message += "🛂 <b>TÜRKİYE'DEN BAŞVURU / VİZE SPONSORLUĞU AÇIK:</b>\n"
+            for job in visa_jobs_list[:6]:
+                tr_title = html.escape(translate_to_turkish(job["title"]))
+                orig_title = html.escape(job["title"])
+                tr_loc = html.escape(translate_to_turkish(job["location"]))
+                message += f"• <b>{tr_title}</b>\n  <i>(Orijinal: {orig_title})</i>\n  📍 {tr_loc} - {job['source']}\n  <a href='{job['url']}'>İlana Git</a>\n\n"
+
+        if standard_jobs_list:
+            message += "⚠️ <b>DİĞER İLANLAR (Çalışma İzni Şartını Kontrol Et):</b>\n"
+            for job in standard_jobs_list[:6]:
+                tr_title = html.escape(translate_to_turkish(job["title"]))
+                orig_title = html.escape(job["title"])
+                tr_loc = html.escape(translate_to_turkish(job["location"]))
+                message += f"• <b>{tr_title}</b>\n  <i>(Orijinal: {orig_title})</i>\n  📍 {tr_loc} - {job['source']}\n  <a href='{job['url']}'>İlana Git</a>\n\n"
+
         send_telegram_notification(message[:4000])
     else:
         print("Yeni ilan yok.")
-        send_telegram_notification("🤖 *İş Botu Çalıştı (Vize Filtreli):* Yeni ilan yok, sistem aktif.")
+        send_telegram_notification("🤖 <b>İş Botu Çalıştı (Vize Filtreli):</b> Yeni ilan yok, sistem aktif.")
 
 if __name__ == "__main__":
     check_jobs()
