@@ -23,7 +23,6 @@ TARGET_LOCATIONS = [
     "united states", "usa", "new york", "california", "texas", "florida", "chicago", "los angeles", "new jersey"
 ]
 
-# LinkedIn'de doğrudan aranacak hedef kombinasyonlar
 LINKEDIN_QUERIES = [
     ("courier delivery driver", "Germany"),
     ("warehouse lager", "Germany"),
@@ -32,6 +31,21 @@ LINKEDIN_QUERIES = [
     ("warehouse logistics", "United States"),
     ("personal trainer fitness", "United States")
 ]
+
+def translate_to_turkish(text):
+    """İlan başlığını ve konumunu otomatik olarak Türkçeye çevirir."""
+    if not text:
+        return text
+    try:
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=tr&dt=t&q={quote(text)}"
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            translated = "".join([part[0] for part in data[0] if part[0]])
+            return translated
+    except Exception as e:
+        print(f"Çeviri hatası: {e}")
+    return text
 
 def send_telegram_notification(message):
     if not TELEGRAM_TOKEN:
@@ -79,7 +93,6 @@ def fetch_linkedin():
     }
     for keyword, country in LINKEDIN_QUERIES:
         try:
-            # Son 24 saatte yayınlanan (f_TPR=r86400) yerinde (f_WT=1) ilanları çeker
             url = f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords={quote(keyword)}&location={quote(country)}&f_TPR=r86400&f_WT=1"
             res = requests.get(url, headers=headers, timeout=10)
             if res.status_code == 200:
@@ -123,19 +136,25 @@ def check_jobs():
 
         if location_match and keyword_match and not is_excluded:
             new_jobs_found += 1
+            
+            # Başlık ve konumu Türkçeye çevir
+            tr_title = translate_to_turkish(job["title"])
+            tr_location = translate_to_turkish(job["location"])
+            
             visa_tag = "🛂 *Vize Sponsorluğu!* | " if job.get("visa") else ""
             found_jobs_text += (
-                f"• *{job['title']}* ({job['location']}) - _{job['source']}_\n"
+                f"• *{tr_title}*\n"
+                f"  _(Orijinal: {job['title']})_\n"
+                f"  📍 {tr_location} - _{job['source']}_\n"
                 f"  {visa_tag}[İlana Git]({job['url']})\n\n"
             )
 
     if new_jobs_found > 0:
-        # Telegram mesaj limitine takılmamak için ilk 15 ilanı temiz şekilde gösterir
         message = f"🎯 *Yeni Saha İşi Bulundu!* ({new_jobs_found} Adet)\n\n{found_jobs_text}"[:4000]
         send_telegram_notification(message)
     else:
         print("Yeni ilan yok.")
-        send_telegram_notification("🤖 *İş Botu Çalıştı (LinkedIn + Arbeitnow):* Yeni ilan yok, sistem aktif.")
+        send_telegram_notification("🤖 *İş Botu Çalıştı (TR Çevirili):* Yeni ilan yok, sistem aktif.")
 
 if __name__ == "__main__":
     check_jobs()
