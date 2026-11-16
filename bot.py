@@ -2,10 +2,13 @@ import os
 import requests
 import re
 import html
+import json
+import subprocess
 from urllib.parse import quote
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = "8875880423"
+MEMORY_FILE = "sent_jobs.json"
 
 TARGET_KEYWORDS = [
     "courier", "delivery", "driver", "rider", "kurier", "fahrer", "zusteller", "auslieferungsfahrer", "paketbote",
@@ -41,6 +44,39 @@ LINKEDIN_QUERIES = [
     ("personal trainer fitness", "United States")
 ]
 
+def load_memory():
+    """Daha önce gönderilmiş ilanların URL'lerini yükler."""
+    if os.path.exists(MEMORY_FILE):
+        try:
+            with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+        except Exception as e:
+            print(f"Hafıza okuma hatası: {e}")
+    return set()
+
+def save_memory(sent_urls):
+    """Gönderilen ilanları hafıza dosyasına kaydeder ve GitHub'a otomatik commit eder."""
+    try:
+        with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(sent_urls), f, ensure_ascii=False, indent=2)
+        
+        # GitHub Actions ortamında hafızayı repoya kaydet
+        subprocess.run(["git", "config", "--global", "user.name", "JobBot[bot]"], check=True)
+        subprocess.run(["git", "config", "--global", "user.email", "bot@users.noreply.github.com"], check=True)
+        subprocess.run(["git", "add", MEMORY_FILE], check=True)
+        subprocess.run(["git", "commit", "-m", "Update job bot memory [skip ci]"], check=True)
+        
+        repo = os.environ.get("GITHUB_REPOSITORY")
+        token = os.environ.get("GITHUB_TOKEN")
+        if repo and token:
+            remote_url = f"https://x-access-token:{token}@github.com/{repo}.git"
+            # Hangi branch'te çalışıyorsa ona push eder
+            branch = os.environ.get("GITHUB_REF_NAME", "main")
+            subprocess.run(["git", "push", remote_url, f"HEAD:{branch}"], check=True)
+            print("[Hafıza] Gönderilen ilanlar GitHub deposuna kaydedildi.")
+    except Exception as e:
+        print(f"Hafıza kaydetme/git push hatası: {e}")
+
 def translate_to_turkish(text):
     if not text:
         return text
@@ -59,8 +95,6 @@ def send_telegram_notification(message):
         print("Hata: TELEGRAM_TOKEN bulunamadı!")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    
-    # Önce güvenli HTML formatında göndermeyi dener
     payload = {
         "chat_id": CHAT_ID,
         "text": message,
@@ -72,16 +106,14 @@ def send_telegram_notification(message):
         if response.status_code == 200:
             print("[Telegram Mesajı Gönderildi]")
         else:
-            print(f"HTML gönderim hatası ({response.text}), düz metin olarak tekrar deneniyor...")
-            # HTML bile takılırsa formatsız düz metin olarak kesin gönderir
+            print(f"HTML gönderim hatası ({response.text}), düz metin deneniyor...")
             clean_text = re.sub(r'<[^>]+>', '', message)
             fallback_payload = {
                 "chat_id": CHAT_ID,
                 "text": clean_text,
                 "disable_web_page_preview": True
             }
-            res2 = requests.post(url, json=fallback_payload, timeout=10)
-            print(f"Yedek gönderim sonucu: {res2.status_code}")
+            requests.post(url, json=fallback_payload, timeout=10)
     except Exception as e:
         print(f"Telegram gönderme hatası: {e}")
 
@@ -135,17 +167,20 @@ def fetch_linkedin():
     return jobs
 
 def check_jobs():
-    print("\n[Bilgi] Yurt dışı başvurusu ve vize filtreli saha ilanları taranıyor...")
+    print("\n[Bilgi] Hafıza destekli vize ve saha ilanları taranıyor...")
     
+    sent_urls = load_memory()
     all_jobs = fetch_arbeitnow() + fetch_linkedin()
+    
     visa_jobs_list = []
     standard_jobs_list = []
-    seen_urls = set()
+    new_urls_to_save = set()
 
     for job in all_jobs:
-        if job["url"] in seen_urls:
+        job_url = job["url"]
+        # Daha önce gönderildiyse tamamen atla
+        if job_url in sent_urls:
             continue
-        seen_urls.add(job["url"])
 
         title_lower = job["title"].lower()
         desc_lower = job.get("description", "").lower()
@@ -161,6 +196,9 @@ def check_jobs():
 
         if location_match and keyword_match and not is_excluded:
             has_visa = job.get("visa_api") or any(v_kw in combined_text for v_kw in VISA_KEYWORDS)
+            
+            # Yeni bulunan ilanı listeye ekle ve hafızaya alınacaklar kümesine kaydet
+            new_urls_to_save.add(job_url)
             if has_visa:
                 visa_jobs_list.append(job)
             else:
@@ -169,7 +207,6 @@ def check_jobs():
     total_found = len(visa_jobs_list) + len(standard_jobs_list)
 
     if total_found > 0:
-        # Çeviri limitine takılmamak için en fazla ilk 12 ilanı çevirip gösterir
         message = f"🎯 <b>Yeni Saha İşi Bulundu!</b> (Toplam {total_found} Adet)\n\n"
         
         if visa_jobs_list:
@@ -189,9 +226,13 @@ def check_jobs():
                 message += f"• <b>{tr_title}</b>\n  <i>(Orijinal: {orig_title})</i>\n  📍 {tr_loc} - {job['source']}\n  <a href='{job['url']}'>İlana Git</a>\n\n"
 
         send_telegram_notification(message[:4000])
+        
+        # Gönderilen yeni ilanları hafızaya ekle ve kaydet
+        sent_urls.update(new_urls_to_save)
+        save_memory(sent_urls)
     else:
-        print("Yeni ilan yok.")
-        send_telegram_notification("🤖 <b>İş Botu Çalıştı (Vize Filtreli):</b> Yeni ilan yok, sistem aktif.")
+        print("Yeni ve daha önce gönderilmemiş ilan yok.")
+        send_telegram_notification("🤖 <b>İş Botu Çalıştı (Hafızalı):</b> Yeni ve eşsiz ilan yok, sistem aktif.")
 
 if __name__ == "__main__":
     check_jobs()
