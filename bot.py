@@ -1,7 +1,7 @@
 import os
 import requests
 
-# Telegram Bilgilerin Tanımlandı
+# Telegram Bilgilerin
 TELEGRAM_TOKEN = "9139035442:AAHQtetUhGZZq3jFU4EhhVRdnFXOUh2KskW"
 CHAT_ID = "8875880423"
 
