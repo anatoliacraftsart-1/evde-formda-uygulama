@@ -4,9 +4,9 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
 
-# Doğrudan kimlik bilgileri (Secrets hatasını ve kilitlenmeleri tamamen bitirir)
+# Doğrudan kimlik bilgileri (GitHub Secrets hatası yaşamamak için)
 SENDER_EMAIL = "taniksiztarih@gmail.com"
-SENDER_PASSWORD = "njpsmccmalimibog"  # 16 haneli uygulama şifren
+SENDER_PASSWORD = "njpsmccmalimibog"  # 16 haneli uygulama şifren (boşluksuz)
 RECEIVER_EMAIL = "taniksiztarih@gmail.com"
 
 TARGET_KEYWORDS = ["warehouse", "trainer", "delivery", "courier"]
@@ -20,8 +20,8 @@ def send_email_notification(subject, body_text):
         msg["Subject"] = subject
         msg.attach(MIMEText(body_text, "plain", "utf-8"))
 
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
+        # Port 465 ve SMTP_SSL kullanarak güvenli ve engellenmeyen bağlantı
+        server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
         server.login(SENDER_EMAIL, SENDER_PASSWORD)
         server.sendmail(SENDER_EMAIL, RECEIVER_EMAIL, msg.as_string())
         server.quit()
