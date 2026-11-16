@@ -1,14 +1,17 @@
 import os
 import requests
 
-# Güncel Telegram Bilgilerin
-TELEGRAM_TOKEN = "9139035442:AAHQtetUhGZZq3jFU4EhhVRdnFXOUh2KskW"
+# Token güvenli şekilde GitHub Secrets üzerinden okunur
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = "8875880423"
 
 TARGET_KEYWORDS = ["warehouse", "trainer", "delivery", "courier"]
 TARGET_COUNTRIES = ["Germany", "United States", "Deutschland", "USA"]
 
 def send_telegram_notification(message):
+    if not TELEGRAM_TOKEN:
+        print("Hata: TELEGRAM_TOKEN bulunamadı! GitHub Secrets ayarını kontrol edin.")
+        return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {
